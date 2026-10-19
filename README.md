@@ -1,86 +1,167 @@
-# dsh-bridge · Kimi Work ↔ DSH 桥接插件
+# Kimi Work ↔ DSH 桥接
 
-把 **Kimi Work** 的任务派发给本机 **DSH（DeepSeek Harness）** 执行，并把产出的文件自动交付过去。
-Kimi 当总指挥负责拆解与验收，DSH 当执行手在独立会话里干活——各干各的，Token 互不浪费。
+让 **Kimi Work** 把活派给本机的 **DSH（DeepSeek Harness）** 去跑，并把 Kimi 这边产出的文件送到 DSH 手上。
 
-> A Kimi Work plugin that dispatches tasks to your local DSH (DeepSeek Harness) as independent sessions, hands over the files they need, and reads status/results back at any time.
+- 派发是**异步**的：调用成功 = 任务已入列，DSH 会新开一个独立会话立刻开跑。
+- 桥接只在**本机回环**上监听，除了令牌还有**目录白名单**——只允许在白名单里的目录下开会话。
 
-## 它能做什么
+> A bridge that lets Kimi Work dispatch tasks to your local DSH (DeepSeek Harness) as independent sessions, hand over files, and read status back.
 
-- **派任务**：`dsh_dispatch_task` 新建一个独立 DSH 会话并立即开跑，任务在 DSH 的 Web 界面里能看到、能接着聊。
-- **交文件**：把已产出的文件（绝对路径）连同任务一起交付；路径清单 + 关键文件快照（默认 ≤ 8 MB）一并收进 DSH 侧 inbox。
-- **查进度**：`dsh_task_status` / `dsh_list_tasks` 随时回读状态、会话 id、已收文件和最后一次回复摘要。
-- **CLI 兜底**：MCP 通道不可用（DSH 刚启动、插件未装）时，用 `node scripts/dsh-bridge.mjs` 直接调 REST。
+---
 
-## 架构
+## 一、它由两半组成
+
+| 半边 | 位置 | 作用 |
+| --- | --- | --- |
+| **DSH 侧插件** `dsh-kimiwork-bridge` | [`dsh-plugin/`](dsh-plugin) | 在 DSH 的 web 服务上挂 `/api/kimiwork`（REST + MCP 双通道）：建独立会话、注入任务、盯状态、收文件快照。 |
+| **Kimi 侧插件** `dsh-bridge` | [`kimi-plugin/`](kimi-plugin) | 给 Kimi Work 挂 5 个 MCP 工具 + 技能 + 斜杠命令 + CLI 兜底，负责把活派出去。 |
+| **部署 / 自测脚本** | [`tools/`](tools) | 一键部署任一侧、MCP 探针、冒烟与集成测试。 |
+
+两边通过 **MCP（JSON-RPC）** 对接，但中间隔了一层 stdio shim：
 
 ```
-Kimi Work（本插件，MCP stdio shim）
-   │  动态端点发现：--endpoint > $DSH_KIMIWORK_ENDPOINT > endpoint.json > 静态兜底
-   ▼
-DSH 侧插件 dsh-kimiwork-bridge（HTTP /api/kimiwork，仅本机回环）
-   ▼
-DeepSeek Harness 独立会话（Web 界面可见、可续聊）
+Kimi Work ──stdio──▶ kimi-plugin/scripts/dsh-bridge-mcp.cmd   （Kimi 拉起的子进程）
+                          │  tools/call 转发
+                          ▼
+                     DSH /api/kimiwork/mcp   （HTTP，本机回环）
 ```
 
-- 端点是**运行时发现**的：DSH 侧插件启动后把真实基址写进 `~/.dsh/dsh-kimiwork-bridge/endpoint.json`，Kimi 侧每次调用重新读——DSH 换端口也不怕。
-- 只接受本机回环地址请求；`cwd` 必须落在 `allowedRoots` 白名单内（硬约束，防越界）；可选 Bearer token。
+- **端点不写死**。`dsh web` 的端口是**运行期**决定的。DSH 侧插件启动时把真实基址、端口、pid、令牌写进 `~/.dsh/dsh-kimiwork-bridge/endpoint.json`，Kimi 侧每次调用都重新读它。优先级：
+  `--endpoint` > `$DSH_KIMMIWORK_ENDPOINT` > `endpoint.json` > 静态兜底 `http://127.0.0.1:19387/api/kimiwork`（只在端点文件缺失时命中）。
+- **为什么走 stdio 而不是让 Kimi 直接连 HTTP**：插件挂在 DSH 自己的 web 服务上，`prefix` 路由在 dsh web 的 cookie 鉴权层**之前**命中，所以 HTTP 理论上通。但 Kimi 的 HTTP MCP 客户端行为没法在本机自证；stdio 这条能整条本地实测（`tools/probe-mcp.mjs --stdio`），出问题也能直接看到 shim 的 stderr。
 
-## MCP 工具
+## 二、数据怎么流
 
-| 工具 | 说明 |
-| --- | --- |
-| `dsh_bridge_info` | 先看这个：本机 DSH 工作区、允许执行的根目录白名单、默认工作目录。 |
-| `dsh_dispatch_task` | 派任务：新建独立会话 + 立即开跑 + 一并交付文件。 |
-| `dsh_deliver_files` | 只交付文件，不派任务。 |
-| `dsh_task_status` | 查某个 task_id 的状态、会话 id、已收文件和最后一次回复摘要。 |
-| `dsh_list_tasks` | 最近派给 DSH 的任务列表。 |
+```
+Kimi Work ──MCP tools/call──▶ DSH  /api/kimiwork/mcp
+                                    │
+                                    ├─ sessionController.create()   → 新建独立会话 kw:<时间戳>
+                                    ├─ sessionController.prompt()   → 把任务+文件路径注入这轮对话
+                                    ├─ ctx.on('agent/status')       → 等它不 running 了
+                                    └─ sessionController.inspect()  → 抓最后一次助手回复当摘要
 
-详细字段、REST 通道与鉴权边界见 [bridge-api.md](skills/dsh-bridge/references/bridge-api.md)。
+Kimi Work ──POST /deliver────▶ 文件快照落 ~/.dsh/dsh-kimiwork-bridge/inbox/<task_id>/files/
+```
 
-## 安装
+DSH 侧所有运行时数据都在 `~/.dsh/dsh-kimiwork-bridge/`：`tasks/`、`deliveries/`、`inbox/`、`log.ndjson`、`token`。
 
-前置：本机 DSH 正在运行，且 DSH 侧已启用桥接插件 `dsh-kimiwork-bridge`。
+## 三、怎么用
 
-1. 把本仓库整个目录拷进 Kimi Work 的插件目录。
-2. `scripts/node-path.txt` 由部署脚本生成（node.exe 绝对路径），不进版本库；缺失时启动器按 `DSH_BRIDGE_NODE` → DSH 自带运行时 → PATH 的顺序自动寻找 node。
-3. 在 Kimi Work 中启用插件后，`/dsh-bridge` 命令与 5 个 MCP 工具即可用。
+装好之后，三种用法（任选）：
 
-## 快速上手
+1. **自然语言**——直接说「把这批文件交给 DSH 处理」「DSH 那边跑完了吗」，Kimi 会自己调工具。
+2. **斜杠命令**——`/dsh-bridge:派发 把 out/ 里的表合并成一张总表`。
+3. **CLI 兜底**（MCP 连不上时用，字段名和 MCP 完全一致）：
 
 ```bash
-# 摸清环境：白名单 / 工作区 / 当前端点
-node scripts/dsh-bridge.mjs info
-
-# 派任务（instructions 是 DSH 看到的全部上下文：目标 / 约束 / 验收标准 / 汇报格式）
-node scripts/dsh-bridge.mjs dispatch \
-  --instructions "把 report.pptx 转成 pdf，完成后用 ≤300 字汇报：结论 + 产物绝对路径 + 待确认项" \
-  --title "转 PDF" \
-  --file "C:\path\report.pptx"
-
-# 查进度 / 列任务
-node scripts/dsh-bridge.mjs status --task-id kw-20261016-090038-5ee91e
-node scripts/dsh-bridge.mjs list --limit 10
+node kimi-plugin/scripts/dsh-bridge.mjs info
+node kimi-plugin/scripts/dsh-bridge.mjs dispatch --instructions "要 DSH 做的事" --file <绝对路径>
+node kimi-plugin/scripts/dsh-bridge.mjs status   --task-id kw-20261016-091448-189947
+node kimi-plugin/scripts/dsh-bridge.mjs list
 ```
 
-## 设计理念（每个决策都有理由）
+CLI 找不到 DSH 时退出码 `3`，令牌不对退出码 `6`，被拒（含白名单）退出码 `5`。
 
-- **派发是异步的**：返回 `accepted` 只代表任务已入列。预计 ≤ 2 分钟的短任务当场等（最多轮询 3 次）；长任务交给定时等待器推送通知，**禁止无意义轮询烧 Token**。
-- **交接卡不断线**：每次派发在 `.dsh-handoff/<task_id>.md` 写交接卡（目标 / 验收标准 / 完成后要做的事），换窗口、隔天回来也能无损接上。
-- **安全边界是硬约束**：仅回环、目录白名单、可选 token，缺一个都拒绝；桥接只交付已存在的文件，绝不替你绕过限制。
-- **省 Token 的汇报约定**：派发指令结尾固定要求 DSH 用 ≤300 字汇报，否则审计输出会吃掉 4000 字的摘要额度。
+完整的指挥流程（等待规则、交接卡、派发指令怎么写）见 [`kimi-plugin/skills/dsh-bridge/SKILL.md`](kimi-plugin/skills/dsh-bridge/SKILL.md)。
 
-完整的指挥流程（等待规则、交接卡模板、唤醒后续接、派发指令写法）见 [SKILL.md](skills/dsh-bridge/SKILL.md)。
+## 四、5 个 MCP 工具
 
-## 仓库结构
+| 工具 | 干什么 | 关键入参 |
+| --- | --- | --- |
+| `dsh_dispatch_task` | 派活：新建独立 DSH 会话并立刻开跑 | `instructions`(必填)、`files`、`cwd`、`title`、`notes` |
+| `dsh_deliver_files` | 只交文件，不让 DSH 干活 | `files`(必填)、`task_id`、`note`、`extensions` |
+| `dsh_task_status` | 查某个任务：状态 / 会话 id / 已收文件 / 最后一次回复摘要 | `task_id` |
+| `dsh_list_tasks` | 最近的任务列表 | `limit` |
+| `dsh_bridge_info` | 先摸环境：白名单、默认目录、DSH 工作区、在跑的任务 | — |
 
+完整字段、返回样例和 REST 路由见 [`kimi-plugin/skills/dsh-bridge/references/bridge-api.md`](kimi-plugin/skills/dsh-bridge/references/bridge-api.md)。
+
+任务状态：`accepted` → `running` → `done` / `failed`。`done` 之后 `lastReply` 是 DSH 最后一次回复的**摘要**（最多 4000 字），不是全文。
+
+## 五、安全边界
+
+三道，都在 DSH 侧：
+
+1. **只认回环**——非 `127.0.0.1`/`::1` 的请求一律 403。
+2. **共享令牌**——`requireToken: true` 时所有路由都要 `Authorization: Bearer <token>`，令牌在 `~/.dsh/dsh-kimiwork-bridge/token`（纯文本或 JSON 均可）。
+3. **执行目录白名单**——`allowedRoots` 之外的 `cwd` 直接 400 拒绝。
+
+改白名单：编辑 `~/.dsh/profiles/desktop/cordis.patch.yml` 里 `kimiwork-bridge` 那条的 `config.allowedRoots`，**这个文件是被监听的，存盘即生效**，不用重启 DSH：
+
+```yaml
+- id: kimiwork-bridge          # 只能靠 id 去合并，别再加 name:
+  config:
+    requireToken: true
+    promptTimeoutMs: 30000
+    allowedRoots:
+      - 'C:\Users\island\Desktop'
 ```
-kimi.plugin.json        # 插件清单（MCP server / skill / command 注册）
-commands/dsh-bridge.md  # /dsh-bridge 斜杠命令
-skills/dsh-bridge/      # 指挥模式 skill（SKILL.md + 接口参考）
-scripts/                # MCP stdio shim、CLI 兜底、端点发现、可选 stop hook
-locales/                # 英文界面文案
+
+> 注意：这条 profile 覆盖**必须只写 `id`**。写成 `id` + `name` 时，因为 bundle 里的条目名换成了相对路径，两者不再合并，配置会静默退回默认值（`requireToken: false`、白名单为空）。
+
+## 六、改代码 / 重新部署
+
+```bash
+# DSH 侧（内容哈希构建目录，绕开 ESM 模块缓存，部署后无需重启 DSH）
+node tools/deploy-dsh-plugin.mjs
+# 然后让 DSH 重新装载条目：
+#   plugin_manager set_bundle target=dsh-kimiwork-bridge enabled=false
+#   plugin_manager set_bundle target=dsh-kimiwork-bridge enabled=true
+
+# Kimi 侧（同步 + 生成 tools.json / node-path.txt，不烘任何令牌）
+node tools/deploy-kimi-plugin.mjs
 ```
+
+部署脚本会顺手生成两个文件到插件里：`scripts/tools.json`（工具 schema，直接从 `dsh-plugin/lib/mcp.js` 的 `TOOLS` 导出，两边同一份）和 `scripts/node-path.txt`（node 绝对路径，给 `.cmd` 启动器兜底，**不进版本库**）。
+
+### 为什么 DSH 侧要搞「内容哈希构建目录」
+
+DSH 的 ESM 模块缓存按**绝对路径 URL** 生效：`lib/index.js` 一旦加载过，原地覆盖再 reload 也只会命中旧缓存，改动永远不生效，除非重启 DSH。
+（DSH 自带的 `dsh-hmr` 本来能替换模块缓存，但 base bundle 把它配成了 `root: []`——只监听 profile 配置、不监听模块源码，而且要改也得在启动前配。）
+
+所以 `deploy-dsh-plugin.mjs` 把整套 `lib/*.js` 复制到 `lib/builds/<内容哈希>/` 这个**从未被加载过的新 URL** 下，并把 bundle patch 的 `insert.name` 指过去：
+换代码 = 换 URL = 一次干净的新模块加载，**部署后不用重启 DSH**。
+
+## 七、自测
+
+```bash
+node tools/smoke-bridge.mjs         # 28 条断言：假宿主 + 假 sessionController，起真 http 服务跑全链路（含 endpoint.json 发布/清理）
+node tools/verify-plugin.mjs        # 14 条断言：把**已装进 profile 的真实入口**拉起来（真 http 服务冒充 webServer），验路由/端点发布/卸载
+node tools/probe-mcp.mjs            # 直连 DSH 的 HTTP MCP 端点（initialize / tools/list / tools/call / 未知工具）
+node tools/probe-mcp.mjs --stdio    # 拉起 Kimi 侧 .cmd 启动器，按 MCP over stdio 实测整条链
+```
+
+## 八、排错
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| CLI 退出码 3「连不上 DSH」 | 端点不对。先 `dsh-bridge.mjs endpoint` 看它读的是哪个端点、来源是什么。 |
+| `endpoint.json` 不存在 / 端点退回了 19387 | DSH 侧插件没启用，或 `dsh web` 还没 listen。看 DSH 日志里有没有 `endpoint published: <url> -> ...`；用 `dsh plugin --profile desktop list` 确认 `kimiwork-bridge` 在。 |
+| HTTP 401 | 令牌不对：`endpoint.json` 里的 token 与 DSH 侧现用令牌不一致（插件重启换过令牌）。让 DSH 侧重载一次插件即可重写端点文件。 |
+| Kimi 里看不到 5 个 `dsh_*` 工具 | 装的是旧版（`url` 方式）的清单 → 在 Kimi 里卸掉重装；还不行就看 daemon 日志里 `dsh-bridge` 这个 MCP 的 stderr。 |
+| daemon 日志里 `[dsh-bridge] node.exe not found` | Kimi 宿主 PATH 里没有 node，启动器按 `DSH_BRIDGE_NODE` → 同目录 `node-path.txt` → `%USERPROFILE%\.dsh\dsh-runtimes\*\dependencies\node\bin\node.exe` → `where node` 顺序找。重跑 `deploy-kimi-plugin.mjs` 会重写 `node-path.txt`。 |
+| HTTP 400「不在允许执行的根目录白名单内」 | 白名单没包含这个目录，去 profile 的 `cordis.patch.yml` 加。 |
+| `Cannot read properties of undefined (reading 'throwIfAborted')` | 历史坑：`sessionController.prompt(request, signal)` 的第二个参数是**必填**的 AbortSignal。现在的代码传的是 `AbortSignal.timeout(promptTimeoutMs)`。 |
+| 改了插件代码行为不变 | 见第六节：必须走 `deploy-dsh-plugin.mjs` + 重载，不能只覆盖文件。 |
+
+## 九、还没做的
+
+- **Stop hook 只是写好了、没有启用**。`kimi-plugin/scripts/kimiwork-stop-hook.mjs` 会在 Kimi 每轮结束时读它的改动日志 `file-edit-journal.json`，把这一轮新建/改过的文件兜底交付给 DSH（幂等、永远退出码 0）。
+  按 Kimi 插件规范，**声明了 `hooks` 的插件不能自动注册，必须用户本人过目**——所以它没写进清单。点头后加上这一行、重跑 `deploy-kimi-plugin.mjs` 即可：
+
+  ```json
+  "hooks": [{ "event": "Stop", "command": "<node 绝对路径> ./scripts/kimiwork-stop-hook.mjs", "timeout": 30 }]
+  ```
+
+  （`node` 不在 Kimi 宿主 PATH 里，hook 的 command 得写 node 绝对路径。）
+
+- **Kimi 直连 HTTP 的方式没验证**。清单现在走 `command` 起 stdio shim；`url` 方式理论上也能用（插件路由在 dsh web 鉴权层之前命中），但 Kimi 的 HTTP MCP 客户端在本机没实测过。
+
+- DSH 产出的文件目前靠读快照（`inbox/`）拿回 Kimi 侧，没有做反向的自动推送。
+
+## 十、实现契约
+
+动手前把两边的接口契约都核实过，定稿在 [`docs/impl-contracts.md`](docs/impl-contracts.md)（DSH 宿主服务契约、装载/热加载机制、Kimi Work 侧事实、已定实现决策）。
 
 ## License
 
