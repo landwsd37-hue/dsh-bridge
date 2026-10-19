@@ -1,0 +1,7 @@
+# 由 tools/deploy-dsh-plugin.mjs 生成，请勿手改。
+# 入口指向 lib/builds/<内容哈希>/index.js：换代码就换 URL，绕开 DSH 的 ESM 模块缓存，
+# 部署后无需重启 DSH 即生效。运行时配置请写在 profile 的 cordis.patch.yml 里
+# （- id: kimiwork-bridge / config: {...}）。
+- insert:
+    - id: kimiwork-bridge
+      name: './lib/builds/abec9707/index.js'
