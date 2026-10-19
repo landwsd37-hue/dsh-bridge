@@ -1,0 +1,129 @@
+{
+  "generatedAt": "2026-10-18T09:17:17.895Z",
+  "source": "dsh-plugin/lib/mcp.js",
+  "tools": [
+    {
+      "name": "dsh_dispatch_task",
+      "description": "把一个任务派发给 DSH（DeepSeek Harness）。会新建一个独立的 DSH 会话并立刻开跑，会话可在 DSH 的 Web 界面里看到和继续对话。返回 task_id 和 session_id。如果这次任务已经产出了文件，把它们作为绝对路径放进 files，桥接会把路径清单和关键文件快照一起收下。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instructions": {
+            "type": "string",
+            "description": "要 DSH 做的事，写清楚目标、约束和验收标准；DSH 那边看到的就是这段文本。"
+          },
+          "title": {
+            "type": "string",
+            "description": "任务标题，用于列表展示。"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "DSH 会话的工作目录（绝对路径）。默认取 files 的公共父目录。"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "本次交付给 DSH 的文件/目录绝对路径；填目录会按递归展开。"
+          },
+          "notes": {
+            "type": "string",
+            "description": "给 DSH 的补充说明或上下文。"
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "可选：把会话挂到 DSH 里某个已注册工作区（用 dsh_bridge_info 查 id）。"
+          }
+        },
+        "required": [
+          "instructions"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_deliver_files",
+      "description": "只交付文件，不派发任务。桥接会记录绝对路径清单（大小/mtime/sha256），并把小于阈值的文件另存快照，之后 DSH 侧随时能按 delivery_id 或 task_id 取回。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "文件或目录的绝对路径列表。"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：挂到已存在的 task_id 上。不填则新建一条独立交付。"
+          },
+          "note": {
+            "type": "string",
+            "description": "这次交付的说明。"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "目录是否递归展开，默认 true。"
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "只要这些扩展名，例如 [\".pptx\",\".xlsx\"]；不填表示不限。"
+          },
+          "snapshot": {
+            "type": "boolean",
+            "description": "是否另存文件快照，默认 true。"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_task_status",
+      "description": "查询某个 task_id 的当前状态、DSH 会话 id、已收文件清单和最后一次回复摘要。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "dsh_dispatch_task 返回的 task_id。"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_list_tasks",
+      "description": "列出最近派发给 DSH 的任务及其状态。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "返回条数，默认 20。"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_bridge_info",
+      "description": "读取桥接的当前配置：本机 DSH 工作区列表、允许执行的根目录白名单、默认工作目录和快照阈值。在决定把文件放哪、或想挂到某个工作区之前先调它。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}
