@@ -1,0 +1,23 @@
+{
+  "displayName": "DSH Bridge",
+  "shortDescription": "Hand work off to your local DSH",
+  "longDescription": "Connects to the local DSH (DeepSeek Harness): dispatch a task into its own DSH session and it starts immediately, hand over the files it needs, and query task status and results at any time. Requires DSH to be running.",
+  "developerName": "island",
+  "tryPrompts": [
+    "Hand these outputs over to DSH",
+    "Where is the DSH task at?",
+    "Have DSH run this batch of data"
+  ],
+  "mcpOverrides": {
+    "dsh-bridge": {
+      "displayName": "DSH Bridge",
+      "description": "Hand work off to your local DSH"
+    }
+  },
+  "skillOverrides": {
+    "dsh-bridge": {
+      "displayName": "DSH Bridge",
+      "description": "Hand work off to your local DSH"
+    }
+  }
+}

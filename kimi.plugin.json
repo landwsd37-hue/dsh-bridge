@@ -1,0 +1,61 @@
+{
+  "$schema": "https://catalog.msh.team/misc/kimi.plugin.schema.json",
+  "name": "dsh-bridge",
+  "version": "0.3.0",
+  "description": "把 Kimi Work 的任务派发给本机 DSH（DeepSeek Harness）执行，并把产出的文件交付过去。",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "bridge",
+    "handoff",
+    "local-agent"
+  ],
+  "author": "island",
+  "skillInstructions": "你是任务总指挥，DSH 是执行手。除生图、生视频，以及只能靠 Kimi 侧专属工具完成的事（浏览器操控、widget/自动化交互、飞书/Notion 等已装 MCP 插件）之外，接到多步骤执行类任务时先拆解流程，把执行环节派给 DSH：调用 MCP 工具 dsh_dispatch_task（会新建一个独立 DSH 会话并立即开跑），把已经产出的文件路径一起放进 files。只需要把文件交给 DSH、不需要它干活时用 dsh_deliver_files。查进度用 dsh_task_status，看最近任务用 dsh_list_tasks，先摸清环境和白名单用 dsh_bridge_info。纯问答闲聊不派；用户明确说「不要给 DSH」时本轮不派。每次派发后必须做两件事：1）在 cwd 下写交接卡 .dsh-handoff/<task_id>.md（目标、验收标准、完成后要做的事）；2）按预计时长分流等待——≤2 分钟的短任务当场最多轮询 3 次，>2 分钟的长任务禁止自己轮询，改触发「DSH 等待器」定时任务（手动触发，runInput 传 task_id）并告诉用户等推送通知。派发是异步的：调用成功只代表任务已入列，不代表已完成，不要假装已经做完。",
+  "interface": {
+    "displayName": "DSH 桥接",
+    "shortDescription": "把活派给本机 DSH，产出的文件自动带过去",
+    "longDescription": "接通本机的 DSH（DeepSeek Harness）：把任务派发成一个独立的 DSH 会话立刻开跑，把产出的文件（路径清单 + 关键文件快照）一并交付，任务状态和结果随时能查回来。需要 DSH 正在运行。",
+    "developerName": "island",
+    "category": "DEVELOPER",
+    "defaultLocale": "zh-CN",
+    "locales": "./locales/",
+    "tryPrompts": [
+      "把这次的产出交给 DSH 接着做",
+      "看看 DSH 那边任务跑到哪了",
+      "让 DSH 帮我把这批数据跑一遍"
+    ],
+    "skillOverrides": {
+      "dsh-bridge": {
+        "displayName": "DSH 桥接",
+        "description": "把活派给本机 DSH，产出的文件自动带过去"
+      }
+    },
+    "mcpOverrides": {
+      "dsh-bridge": {
+        "displayName": "DSH 桥接",
+        "description": "把活派给本机 DSH，产出的文件自动带过去"
+      }
+    }
+  },
+  "skills": "./skills/",
+  "mcpServers": {
+    "dsh-bridge": {
+      "command": "cmd.exe",
+      "args": ["/c", "scripts\\dsh-bridge-mcp.cmd"],
+      "cwd": "./",
+      "toolTimeoutMs": 200000,
+      "enabledTools": [
+        "dsh_dispatch_task",
+        "dsh_deliver_files",
+        "dsh_task_status",
+        "dsh_list_tasks",
+        "dsh_bridge_info"
+      ]
+    }
+  },
+  "commands": "./commands/",
+  "sessionStart": {
+    "skill": "dsh-bridge"
+  }
+}

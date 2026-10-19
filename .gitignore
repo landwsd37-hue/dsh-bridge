@@ -1,0 +1,8 @@
+# 部署期生成的本机 node 路径，不进版本库
+scripts/node-path.txt
+
+# 插件运行期状态
+.state/
+
+# 交接卡（按项目区生成，属本地工作产物）
+.dsh-handoff/
